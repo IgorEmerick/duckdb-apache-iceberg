@@ -27,6 +27,14 @@ expect to scaffold structure as features are added.
   stop and ask the user to push it themselves.
 - **TDD:** always follow Test-Driven Development for code implementation —
   write a failing test first, make it pass, then refactor.
+- **Conventional Commits:** always use the
+  [Conventional Commits](https://www.conventionalcommits.org/) convention for
+  commit messages, merge messages, and branch names.
+  - Commits/merges: `<type>(<optional scope>): <description>` — e.g.
+    `feat(iceberg): add snapshot reader`, `fix: handle empty manifest`.
+  - Branches: `<type>/<short-description>` — e.g. `feat/snapshot-reader`,
+    `chore/setup-claude-and-gitignore`.
+  - Common types: `feat`, `fix`, `chore`, `docs`, `test`, `refactor`.
 
 ## Development workflow
 
