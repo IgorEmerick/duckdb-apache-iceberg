@@ -35,4 +35,7 @@ def get_connection() -> duckdb.DuckDBPyConnection:
   conn.execute(
     f"ATTACH '{warehouse}' AS {catalog} (TYPE iceberg, ENDPOINT '{rest_uri}')"
   )
+  # Make the catalog the default database so application SQL can use
+  # unqualified table names (identical to the in-memory test connection).
+  conn.execute(f"USE {catalog}")
   return conn
