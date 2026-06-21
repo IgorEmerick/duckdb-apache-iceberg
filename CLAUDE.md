@@ -53,6 +53,12 @@ expect to scaffold structure as features are added.
 - **Code** lives under `src/` (no top-level `app/` package — `src` is the
   source root, on the test path via `pythonpath`). **Tests** under `tests/`.
   **Migration files** under `migrations/`, named `{timestamp}-{name}`.
+- **Layering inside `src/`:** `routers/` (FastAPI HTTP routes) → `services/`
+  (domain logic over a DuckDB connection, raising domain errors from
+  `services/errors.py`) → `db/` (connection + migrations). `models/` holds
+  Pydantic request/response schemas. The attached Iceberg catalog is the
+  connection's default database, so service SQL uses unqualified table names —
+  identical to the in-memory connection used in tests.
 
 ## Commands
 

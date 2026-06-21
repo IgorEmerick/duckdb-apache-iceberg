@@ -11,6 +11,7 @@ import duckdb
 from fastapi import FastAPI
 
 from db.migrations import MIGRATIONS_DIR, run_migrations
+from routers.categories import build_categories_router
 
 
 def create_app(
@@ -40,6 +41,9 @@ def create_app(
   @app.get("/health")
   def health() -> dict[str, str]:
     return {"status": "ok"}
+
+  app.include_router(build_categories_router("expense", "/expense-categories"))
+  app.include_router(build_categories_router("income", "/income-categories"))
 
   return app
 
