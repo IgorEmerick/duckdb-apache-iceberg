@@ -485,6 +485,32 @@ python3 -m venv .venv
 .venv/bin/uvicorn main:app --app-dir src --reload
 ```
 
+Runtime dependencies are also captured in `requirements.txt` (direct) and
+`requirements-lock.txt` (fully pinned, used by the Docker image).
+
+### Running with Docker
+
+`docker-compose.yml` brings up the full stack: **MinIO** (S3 warehouse), a
+bucket-init job, the **`apache/iceberg-rest-fixture`** REST catalog, and the
+**app** (built from `Dockerfile`).
+
+```bash
+# Catalog infrastructure only (MinIO + REST catalog)
+docker compose up -d minio createbuckets iceberg-rest
+
+# Full stack including the app on http://localhost:8000
+docker compose up --build
+```
+
+The app reads `ICEBERG_REST_URI`, `ICEBERG_WAREHOUSE`, `ICEBERG_CATALOG_NAME`,
+and S3 settings (`AWS_*`, `S3_ENDPOINT`, `S3_URL_STYLE`, `S3_USE_SSL`) from the
+environment (see the compose file).
+
+> **Write path:** DuckDB's stable `iceberg` extension attaches the REST catalog
+> **read-only**, so the native write path does not work end-to-end. Writes are
+> being migrated to **PyIceberg** (DuckDB stays on the read/report side); reads
+> against the catalog work today.
+
 ## Versioning
 
 | Version | Date | Changes | Authors |

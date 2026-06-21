@@ -1,0 +1,72 @@
+name: duckdb-apache-iceberg
+
+services:
+  # Shared S3-compatible object store used as the Iceberg warehouse.
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot job: create the warehouse bucket.
+  createbuckets:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 admin password &&
+      mc mb -p local/warehouse &&
+      exit 0
+      "
+
+  # Iceberg REST catalog (warehouse backed by MinIO via S3FileIO).
+  iceberg-rest:
+    image: apache/iceberg-rest-fixture
+    depends_on:
+      createbuckets:
+        condition: service_completed_successfully
+    environment:
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      AWS_REGION: us-east-1
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+    ports:
+      - "8181:8181"
+
+  # FastAPI application.
+  app:
+    build: .
+    depends_on:
+      iceberg-rest:
+        condition: service_started
+    environment:
+      ICEBERG_REST_URI: http://iceberg-rest:8181
+      ICEBERG_WAREHOUSE: s3://warehouse/
+      ICEBERG_CATALOG_NAME: finance
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      AWS_REGION: us-east-1
+      S3_ENDPOINT: minio:9000
+      S3_URL_STYLE: path
+      S3_USE_SSL: "false"
+    ports:
+      - "8000:8000"
+
+volumes:
+  minio-data:
