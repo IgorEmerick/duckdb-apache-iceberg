@@ -22,3 +22,19 @@ class ProtectedCategory(CategoryError):
 
 class OutrosCategoryMissing(CategoryError):
   """The OUTROS fallback category is missing (data-integrity violation)."""
+
+
+class TransactionError(Exception):
+  """Base class for expense/income domain errors."""
+
+
+class ExpenseNotFound(TransactionError):
+  """The referenced expense does not exist."""
+
+
+class IncomeNotFound(TransactionError):
+  """The referenced income does not exist."""
+
+
+class UnknownCategory(TransactionError):
+  """A transaction references a category id that does not exist."""

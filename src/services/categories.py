@@ -8,6 +8,7 @@ not enforce constraints.
 
 import duckdb
 
+from services._repository import insert_with_generated_id
 from services.errors import (
   CategoryNotFound,
   DuplicateCategoryName,
@@ -16,7 +17,6 @@ from services.errors import (
 )
 
 OUTROS_NAME = "OUTROS"
-_MAX_ID_RETRIES = 5
 
 # kind -> (category table, linked transactions table)
 _TABLES = {
@@ -47,17 +47,6 @@ def _name_exists(
   return len(rows) > 0
 
 
-def _next_id(conn: duckdb.DuckDBPyConnection, table: str) -> int:
-  row = conn.execute(f"SELECT coalesce(max(id), 0) + 1 FROM {table}").fetchone()
-  return int(row[0]) if row is not None else 1
-
-
-def _insert_category(
-  conn: duckdb.DuckDBPyConnection, table: str, id_: int, name: str
-) -> None:
-  conn.execute(f"INSERT INTO {table} (id, name) VALUES (?, ?)", [id_, name])
-
-
 def list_categories(conn: duckdb.DuckDBPyConnection, kind: str) -> list[dict]:
   """Return all categories of ``kind`` ordered by id."""
   table, _ = _tables(kind)
@@ -68,26 +57,15 @@ def list_categories(conn: duckdb.DuckDBPyConnection, kind: str) -> list[dict]:
 def create_category(conn: duckdb.DuckDBPyConnection, kind: str, name: str) -> dict:
   """Create a category, generating its id as ``max(id) + 1``.
 
-  Raises ``DuplicateCategoryName`` if the name is taken. The insert is retried
-  on a constraint violation (e.g. a concurrent insert that grabbed the same id),
-  so the race between computing the id and inserting is resolved by the database
-  rather than a check-then-insert.
+  Raises ``DuplicateCategoryName`` if the name is taken. Id generation and the
+  retry-on-constraint behaviour live in ``services._repository``.
   """
   table, _ = _tables(kind)
   if _name_exists(conn, table, name):
     raise DuplicateCategoryName(name)
 
-  last_error: duckdb.ConstraintException | None = None
-  for _ in range(_MAX_ID_RETRIES):
-    new_id = _next_id(conn, table)
-    try:
-      _insert_category(conn, table, new_id, name)
-    except duckdb.ConstraintException as exc:
-      last_error = exc
-      continue
-    return {"id": new_id, "name": name}
-
-  raise RuntimeError("could not allocate a unique category id") from last_error
+  new_id = insert_with_generated_id(conn, table, {"name": name})
+  return {"id": new_id, "name": name}
 
 
 def _get_name(conn: duckdb.DuckDBPyConnection, table: str, id_: int) -> str | None:

@@ -215,9 +215,9 @@ sequenceDiagram
     end
 ```
 
-> Edit (`PUT /expenses/{id}`) and delete (`DELETE /expenses/{id}`) follow the
-> same shape using DuckDB `UPDATE` / `DELETE` statements, each producing a new
-> Iceberg snapshot. Incomes mirror this flow.
+> Edit (`PATCH /expenses/{id}`, partial) and delete (`DELETE /expenses/{id}`)
+> follow the same shape using DuckDB `UPDATE` / `DELETE` statements, each
+> producing a new Iceberg snapshot. Incomes mirror this flow.
 
 ### Step 3 — Update / delete a category (cascade)
 
@@ -364,10 +364,12 @@ share a name) and each kind has its own `OUTROS` fallback row.
 | Method | Path | Story | Description |
 |---|---|---|---|
 | POST | `/expenses` | FR-1 | Create an expense (defaults `month`). |
-| PUT | `/expenses/{id}` | FR-2 | Edit an expense. |
+| GET | `/expenses/{id}` | — | Fetch a single expense. |
+| PATCH | `/expenses/{id}` | FR-2 | Edit an expense (partial; only the provided fields). |
 | DELETE | `/expenses/{id}` | FR-3 | Delete an expense. |
 | POST | `/incomes` | FR-4 | Create an income (defaults `month`, `category`). |
-| PUT | `/incomes/{id}` | FR-5 | Edit an income. |
+| GET | `/incomes/{id}` | — | Fetch a single income. |
+| PATCH | `/incomes/{id}` | FR-5 | Edit an income (partial; only the provided fields). |
 | DELETE | `/incomes/{id}` | FR-6 | Delete an income. |
 | GET | `/reports` | FR-7 | Monthly report (`?month=YYYY-MM`, default current). |
 | GET | `/expense-categories` | FR-8 | List expense categories. |
