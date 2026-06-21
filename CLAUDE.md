@@ -45,7 +45,29 @@ expect to scaffold structure as features are added.
 5. Update `README.md` / `CLAUDE.md` if the change affects them.
 6. Commit on the branch (not `main`); ask the user to push when needed.
 
+## Toolchain & layout
+
+- **Python** 3.12+, dependencies declared in `pyproject.toml`.
+- **Virtualenv:** `.venv/` (git-ignored). All tooling runs from it.
+- **Test runner:** `pytest`. **Lint/format:** `ruff` (indent width **2**).
+- **Code** lives under `src/` (no top-level `app/` package — `src` is the
+  source root, on the test path via `pythonpath`). **Tests** under `tests/`.
+  **Migration files** under `migrations/`, named `{timestamp}-{name}`.
+
 ## Commands
 
-_To be filled in once the toolchain (test runner, dependency manager) is
-established. Update this section when it is._
+```bash
+# One-time setup
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+
+# Tests (TDD: write the failing test first)
+.venv/bin/pytest
+
+# Lint & format (2-space indent)
+.venv/bin/ruff format .
+.venv/bin/ruff check .
+
+# Run the API
+.venv/bin/uvicorn main:app --app-dir src --reload
+```

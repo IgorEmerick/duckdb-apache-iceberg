@@ -457,6 +457,26 @@ share a name) and each kind has its own `OUTROS` fallback row.
 
 ---
 
+## Development
+
+This project uses a local `.venv`, **pytest** for tests (TDD), and **ruff**
+(2-space indent) for lint/formatting. Code lives under `src/`, tests under
+`tests/`, and migration files under `migrations/`.
+
+```bash
+# Setup
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+
+# Test, lint, format
+.venv/bin/pytest
+.venv/bin/ruff check .
+.venv/bin/ruff format .
+
+# Run the API (serves /health)
+.venv/bin/uvicorn main:app --app-dir src --reload
+```
+
 ## Versioning
 
 | Version | Date | Changes | Authors |
