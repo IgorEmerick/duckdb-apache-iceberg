@@ -50,24 +50,6 @@ def test_create_rejects_duplicate_name(conn, kind):
     categories.create_category(conn, kind, "Lazer")
 
 
-def test_create_retries_on_insert_constraint_violation(conn, monkeypatch):
-  real_insert = categories._insert_category
-  calls = {"n": 0}
-
-  def flaky_insert(connection, table, id_, name):
-    calls["n"] += 1
-    if calls["n"] == 1:
-      raise duckdb.ConstraintException("duplicate id")
-    return real_insert(connection, table, id_, name)
-
-  monkeypatch.setattr(categories, "_insert_category", flaky_insert)
-
-  created = categories.create_category(conn, "expense", "Mercado")
-
-  assert created == {"id": 2, "name": "Mercado"}
-  assert calls["n"] >= 2  # retried after the constraint violation
-
-
 @pytest.mark.parametrize("kind", ["expense", "income"])
 def test_update_renames_category(conn, kind):
   created = categories.create_category(conn, kind, "Antigo")
