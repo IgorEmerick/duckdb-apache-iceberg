@@ -432,12 +432,18 @@ share a name) and each kind has its own `OUTROS` fallback row.
     { "id": 43, "category": "Transporte", "description": "Combustível", "payment_method": "CREDIT_CARD", "amount_cents": 20000 }
   ],
   "totals_per_category": [
-    { "category": "Alimentação", "total_cents": 15990 },
-    { "category": "Transporte", "total_cents": 20000 }
+    { "category": "Transporte", "total_cents": 20000 },
+    { "category": "Alimentação", "total_cents": 15990 }
   ],
+  "total_income_cents": 850000,
+  "total_expense_cents": 35990,
   "balance_cents": 814010
 }
 ```
+
+> `totals_per_category` is ordered by highest spend first (`total_cents`
+> descending, then category name). `balance_cents = total_income_cents −
+> total_expense_cents`.
 
 **Create category — request (`POST /expense-categories`)**
 
