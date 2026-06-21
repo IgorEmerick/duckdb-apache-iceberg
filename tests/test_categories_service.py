@@ -1,7 +1,8 @@
-import duckdb
+import datetime as dt
+
 import pytest
 
-from db.migrations import MIGRATIONS_DIR, run_migrations
+from db import store
 from services import categories
 from services.errors import (
   CategoryNotFound,
@@ -14,118 +15,141 @@ _TXN = {"expense": "expenses", "income": "incomes"}
 _CAT = {"expense": "expense_categories", "income": "income_categories"}
 
 
-@pytest.fixture
-def conn():
-  connection = duckdb.connect(":memory:")
-  run_migrations(connection, MIGRATIONS_DIR)
-  return connection
+def _add_linked_row(catalog, kind, row_id, category_id):
+  now = dt.datetime(2026, 6, 1)
+  if kind == "expense":
+    store.append(
+      catalog,
+      "expenses",
+      {
+        "id": row_id,
+        "category_id": category_id,
+        "description": "x",
+        "payment_method": "CASH",
+        "amount_cents": 100,
+        "month": "2026-06",
+        "created_at": now,
+        "updated_at": now,
+      },
+    )
+  else:
+    store.append(
+      catalog,
+      "incomes",
+      {
+        "id": row_id,
+        "category_id": category_id,
+        "description": "x",
+        "amount_cents": 100,
+        "month": "2026-06",
+        "created_at": now,
+        "updated_at": now,
+      },
+    )
 
 
 @pytest.mark.parametrize("kind", ["expense", "income"])
-def test_list_returns_only_seeded_outros_initially(conn, kind):
-  assert categories.list_categories(conn, kind) == [{"id": 1, "name": "OUTROS"}]
+def test_list_returns_only_seeded_outros_initially(catalog, kind):
+  assert categories.list_categories(catalog, kind) == [{"id": 1, "name": "OUTROS"}]
 
 
 @pytest.mark.parametrize("kind", ["expense", "income"])
-def test_create_adds_category_with_generated_id(conn, kind):
-  created = categories.create_category(conn, kind, "Alimentação")
+def test_create_adds_category_with_generated_id(catalog, kind):
+  created = categories.create_category(catalog, kind, "Alimentação")
 
   assert created == {"id": 2, "name": "Alimentação"}
-  assert {"id": 2, "name": "Alimentação"} in categories.list_categories(conn, kind)
+  assert created in categories.list_categories(catalog, kind)
 
 
 @pytest.mark.parametrize("kind", ["expense", "income"])
-def test_create_generates_sequential_ids(conn, kind):
-  first = categories.create_category(conn, kind, "A")
-  second = categories.create_category(conn, kind, "B")
+def test_create_generates_sequential_ids(catalog, kind):
+  first = categories.create_category(catalog, kind, "A")
+  second = categories.create_category(catalog, kind, "B")
 
   assert (first["id"], second["id"]) == (2, 3)
 
 
 @pytest.mark.parametrize("kind", ["expense", "income"])
-def test_create_rejects_duplicate_name(conn, kind):
-  categories.create_category(conn, kind, "Lazer")
+def test_create_rejects_duplicate_name(catalog, kind):
+  categories.create_category(catalog, kind, "Lazer")
 
   with pytest.raises(DuplicateCategoryName):
-    categories.create_category(conn, kind, "Lazer")
+    categories.create_category(catalog, kind, "Lazer")
 
 
 @pytest.mark.parametrize("kind", ["expense", "income"])
-def test_update_renames_category(conn, kind):
-  created = categories.create_category(conn, kind, "Antigo")
+def test_update_renames_category(catalog, kind):
+  created = categories.create_category(catalog, kind, "Antigo")
 
-  updated = categories.update_category(conn, kind, created["id"], "Novo")
+  updated = categories.update_category(catalog, kind, created["id"], "Novo")
 
   assert updated == {"id": created["id"], "name": "Novo"}
-  names = [c["name"] for c in categories.list_categories(conn, kind)]
+  names = [c["name"] for c in categories.list_categories(catalog, kind)]
   assert "Novo" in names and "Antigo" not in names
 
 
 @pytest.mark.parametrize("kind", ["expense", "income"])
-def test_update_missing_raises_not_found(conn, kind):
+def test_update_missing_raises_not_found(catalog, kind):
   with pytest.raises(CategoryNotFound):
-    categories.update_category(conn, kind, 999, "X")
+    categories.update_category(catalog, kind, 999, "X")
 
 
 @pytest.mark.parametrize("kind", ["expense", "income"])
-def test_update_rejects_duplicate_name(conn, kind):
-  categories.create_category(conn, kind, "A")
-  b = categories.create_category(conn, kind, "B")
+def test_update_rejects_duplicate_name(catalog, kind):
+  categories.create_category(catalog, kind, "A")
+  b = categories.create_category(catalog, kind, "B")
 
   with pytest.raises(DuplicateCategoryName):
-    categories.update_category(conn, kind, b["id"], "A")
+    categories.update_category(catalog, kind, b["id"], "A")
 
 
 @pytest.mark.parametrize("kind", ["expense", "income"])
-def test_update_outros_is_protected(conn, kind):
+def test_update_outros_is_protected(catalog, kind):
   with pytest.raises(ProtectedCategory):
-    categories.update_category(conn, kind, 1, "Qualquer")
+    categories.update_category(catalog, kind, 1, "Qualquer")
 
 
 @pytest.mark.parametrize("kind", ["expense", "income"])
-def test_delete_removes_category(conn, kind):
-  created = categories.create_category(conn, kind, "Temp")
+def test_delete_removes_category(catalog, kind):
+  created = categories.create_category(catalog, kind, "Temp")
 
-  categories.delete_category(conn, kind, created["id"])
+  categories.delete_category(catalog, kind, created["id"])
 
-  ids = [c["id"] for c in categories.list_categories(conn, kind)]
+  ids = [c["id"] for c in categories.list_categories(catalog, kind)]
   assert created["id"] not in ids
 
 
 @pytest.mark.parametrize("kind", ["expense", "income"])
-def test_delete_missing_raises_not_found(conn, kind):
+def test_delete_missing_raises_not_found(catalog, kind):
   with pytest.raises(CategoryNotFound):
-    categories.delete_category(conn, kind, 999)
+    categories.delete_category(catalog, kind, 999)
 
 
 @pytest.mark.parametrize("kind", ["expense", "income"])
-def test_delete_outros_is_protected(conn, kind):
+def test_delete_outros_is_protected(catalog, kind):
   with pytest.raises(ProtectedCategory):
-    categories.delete_category(conn, kind, 1)
+    categories.delete_category(catalog, kind, 1)
 
 
 @pytest.mark.parametrize("kind", ["expense", "income"])
-def test_delete_reassigns_linked_rows_to_outros(conn, kind):
-  created = categories.create_category(conn, kind, "Some")
-  txn = _TXN[kind]
-  conn.execute(
-    f"INSERT INTO {txn} (id, category_id, description, amount_cents, month) "
-    "VALUES (10, ?, 'x', 100, '2026-06')",
-    [created["id"]],
-  )
+def test_delete_reassigns_linked_rows_to_outros(catalog, kind):
+  created = categories.create_category(catalog, kind, "Some")
+  _add_linked_row(catalog, kind, row_id=10, category_id=created["id"])
 
-  categories.delete_category(conn, kind, created["id"])
+  categories.delete_category(catalog, kind, created["id"])
 
-  rows = conn.execute(f"SELECT category_id FROM {txn} WHERE id = 10").fetchall()
-  assert rows == [(1,)]  # reassigned to OUTROS
+  from pyiceberg.expressions import EqualTo
+
+  rows = store.rows(catalog, _TXN[kind], EqualTo("id", 10))
+  assert [r["category_id"] for r in rows] == [1]  # reassigned to OUTROS
 
 
 @pytest.mark.parametrize("kind", ["expense", "income"])
-def test_delete_non_outros_raises_when_fallback_missing(conn, kind):
-  # Deleting a regular (non-OUTROS) category needs the OUTROS fallback to
-  # reassign its linked rows. If OUTROS is gone, the delete must fail.
-  victim = categories.create_category(conn, kind, "Some")  # a non-OUTROS category
-  conn.execute(f"DELETE FROM {_CAT[kind]} WHERE name = 'OUTROS'")
+def test_delete_non_outros_raises_when_fallback_missing(catalog, kind):
+  from pyiceberg.expressions import EqualTo
+
+  victim = categories.create_category(catalog, kind, "Some")
+  store.delete(catalog, _CAT[kind], EqualTo("name", "OUTROS"))
 
   with pytest.raises(OutrosCategoryMissing):
-    categories.delete_category(conn, kind, victim["id"])
+    categories.delete_category(catalog, kind, victim["id"])

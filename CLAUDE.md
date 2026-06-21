@@ -52,13 +52,17 @@ expect to scaffold structure as features are added.
 - **Test runner:** `pytest`. **Lint/format:** `ruff` (indent width **2**).
 - **Code** lives under `src/` (no top-level `app/` package — `src` is the
   source root, on the test path via `pythonpath`). **Tests** under `tests/`.
-  **Migration files** under `migrations/`, named `{timestamp}-{name}`.
+  **Migration modules** under `migrations/`, named `{timestamp}-{name}.py` with
+  an `up(catalog)` function.
+- **Storage = Iceberg via a REST catalog.** **PyIceberg** does all writes;
+  **DuckDB** only aggregates Arrow for the monthly report. There is no
+  DuckDB-attached catalog (the stable extension is read-only for REST).
 - **Layering inside `src/`:** `routers/` (FastAPI HTTP routes) → `services/`
-  (domain logic over a DuckDB connection, raising domain errors from
-  `services/errors.py`) → `db/` (connection + migrations). `models/` holds
-  Pydantic request/response schemas. The attached Iceberg catalog is the
-  connection's default database, so service SQL uses unqualified table names —
-  identical to the in-memory connection used in tests.
+  (domain logic over a PyIceberg `Catalog`, raising domain errors from
+  `services/errors.py`) → `db/` (`catalog.py` factory, `store.py` PyIceberg
+  helpers, `migrations.py` runner). `models/` holds Pydantic schemas. Tests run
+  against a real local PyIceberg `SqlCatalog` (SQLite + temp warehouse) via the
+  `catalog`/`fresh_catalog` fixtures in `tests/conftest.py`.
 
 ## Commands
 

@@ -1,20 +1,31 @@
-"""Monthly report service (DuckDB read/aggregation side).
+"""Monthly report service.
 
-Builds a report for a month: all incomes and expenses (with their category
-names), total expense per category (highest spend first), the income/expense
-totals, and the final balance.
+PyIceberg scans the tables to Arrow; DuckDB aggregates the Arrow in-process
+(reads only). Builds a month's incomes and expenses (with category names), the
+per-category expense totals (highest spend first), the income/expense totals,
+and the balance.
 """
 
 import duckdb
+from pyiceberg.catalog import Catalog
 
+from db import store
 from services import _clock
 
 
-def build_report(conn: duckdb.DuckDBPyConnection, month: str | None = None) -> dict:
+def _register(con: duckdb.DuckDBPyConnection, catalog: Catalog, name: str) -> None:
+  con.register(name, store.load(catalog, name).scan().to_arrow())
+
+
+def build_report(catalog: Catalog, month: str | None = None) -> dict:
   """Return the monthly report for ``month`` (defaults to the current month)."""
   resolved_month = month if month is not None else _clock.current_month()
 
-  income_rows = conn.execute(
+  con = duckdb.connect()
+  for table in ("incomes", "income_categories", "expenses", "expense_categories"):
+    _register(con, catalog, table)
+
+  income_rows = con.execute(
     """
     SELECT i.id, ic.name, i.description, i.amount_cents
     FROM incomes i
@@ -29,7 +40,7 @@ def build_report(conn: duckdb.DuckDBPyConnection, month: str | None = None) -> d
     for row in income_rows
   ]
 
-  expense_rows = conn.execute(
+  expense_rows = con.execute(
     """
     SELECT e.id, ec.name, e.description, e.payment_method, e.amount_cents
     FROM expenses e
@@ -50,7 +61,7 @@ def build_report(conn: duckdb.DuckDBPyConnection, month: str | None = None) -> d
     for row in expense_rows
   ]
 
-  total_rows = conn.execute(
+  total_rows = con.execute(
     """
     SELECT ec.name, SUM(e.amount_cents) AS total_cents
     FROM expenses e

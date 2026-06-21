@@ -1,0 +1,4 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+duckdb>=1.0
+pyiceberg[s3fs,pyarrow]>=0.11

@@ -1,11 +1,13 @@
-"""Income service: create, read, update (partial), and delete incomes.
+"""Income service: create, read, update (partial), and delete (PyIceberg).
 
-Mirrors the expense service. Incomes carry an optional description and a
-category that defaults to the OUTROS income category when omitted.
+Incomes carry an optional description and a category that defaults to the
+OUTROS income category when omitted.
 """
 
-import duckdb
+from pyiceberg.catalog import Catalog
+from pyiceberg.expressions import EqualTo
 
+from db import store
 from services import _clock
 from services._repository import insert_with_generated_id
 from services.errors import (
@@ -17,50 +19,30 @@ from services.errors import (
 _TABLE = "incomes"
 _CATEGORY_TABLE = "income_categories"
 _OUTROS_NAME = "OUTROS"
-_COLUMNS = (
-  "id",
-  "category_id",
-  "description",
-  "amount_cents",
-  "month",
-  "created_at",
-  "updated_at",
-)
+_FIELDS = ("category_id", "description", "amount_cents", "month")
 
 
-def _row_to_dict(row: tuple) -> dict:
-  return dict(zip(_COLUMNS, row, strict=True))
+def _category_exists(catalog: Catalog, category_id: int) -> bool:
+  return bool(store.rows(catalog, _CATEGORY_TABLE, EqualTo("id", category_id)))
 
 
-def _category_exists(conn: duckdb.DuckDBPyConnection, category_id: int) -> bool:
-  rows = conn.execute(
-    f"SELECT 1 FROM {_CATEGORY_TABLE} WHERE id = ?", [category_id]
-  ).fetchall()
-  return len(rows) > 0
-
-
-def _outros_id(conn: duckdb.DuckDBPyConnection) -> int:
-  row = conn.execute(
-    f"SELECT id FROM {_CATEGORY_TABLE} WHERE name = ?", [_OUTROS_NAME]
-  ).fetchone()
-  if row is None:
+def _outros_id(catalog: Catalog) -> int:
+  rows = store.rows(catalog, _CATEGORY_TABLE, EqualTo("name", _OUTROS_NAME))
+  if not rows:
     raise OutrosCategoryMissing("income")
-  return row[0]
+  return rows[0]["id"]
 
 
-def get_income(conn: duckdb.DuckDBPyConnection, income_id: int) -> dict:
+def get_income(catalog: Catalog, income_id: int) -> dict:
   """Return the income, or raise ``IncomeNotFound``."""
-  columns = ", ".join(_COLUMNS)
-  row = conn.execute(
-    f"SELECT {columns} FROM {_TABLE} WHERE id = ?", [income_id]
-  ).fetchone()
-  if row is None:
+  rows = store.rows(catalog, _TABLE, EqualTo("id", income_id))
+  if not rows:
     raise IncomeNotFound(income_id)
-  return _row_to_dict(row)
+  return rows[0]
 
 
 def create_income(
-  conn: duckdb.DuckDBPyConnection,
+  catalog: Catalog,
   *,
   amount_cents: int,
   month: str | None = None,
@@ -74,13 +56,13 @@ def create_income(
   ``category_id`` does not exist.
   """
   if category_id is None:
-    category_id = _outros_id(conn)
-  elif not _category_exists(conn, category_id):
+    category_id = _outros_id(catalog)
+  elif not _category_exists(catalog, category_id):
     raise UnknownCategory(category_id)
 
   timestamp = _clock.now()
   new_id = insert_with_generated_id(
-    conn,
+    catalog,
     _TABLE,
     {
       "category_id": category_id,
@@ -91,37 +73,27 @@ def create_income(
       "updated_at": timestamp,
     },
   )
-  return get_income(conn, new_id)
+  return get_income(catalog, new_id)
 
 
-def update_income(
-  conn: duckdb.DuckDBPyConnection, income_id: int, changes: dict
-) -> dict:
+def update_income(catalog: Catalog, income_id: int, changes: dict) -> dict:
   """Apply a partial update to an income (only the provided fields).
 
-  Raises ``IncomeNotFound`` if it does not exist and ``UnknownCategory`` if a
-  provided ``category_id`` does not exist.
+  Raises ``IncomeNotFound`` if missing and ``UnknownCategory`` if a provided
+  ``category_id`` does not exist.
   """
-  get_income(conn, income_id)  # raises IncomeNotFound
+  current = get_income(catalog, income_id)
 
-  if "category_id" in changes and not _category_exists(conn, changes["category_id"]):
+  if "category_id" in changes and not _category_exists(catalog, changes["category_id"]):
     raise UnknownCategory(changes["category_id"])
 
-  updates = {
-    column: value
-    for column, value in changes.items()
-    if column in _COLUMNS and column != "id"
-  }
-  updates["updated_at"] = _clock.now()
-  set_sql = ", ".join(f"{column} = ?" for column in updates)
-  conn.execute(
-    f"UPDATE {_TABLE} SET {set_sql} WHERE id = ?",
-    [*updates.values(), income_id],
-  )
-  return get_income(conn, income_id)
+  applied = {field: changes[field] for field in _FIELDS if field in changes}
+  updated = {**current, **applied, "updated_at": _clock.now()}
+  store.replace(catalog, _TABLE, EqualTo("id", income_id), [updated])
+  return updated
 
 
-def delete_income(conn: duckdb.DuckDBPyConnection, income_id: int) -> None:
+def delete_income(catalog: Catalog, income_id: int) -> None:
   """Delete an income, or raise ``IncomeNotFound``."""
-  get_income(conn, income_id)  # raises IncomeNotFound
-  conn.execute(f"DELETE FROM {_TABLE} WHERE id = ?", [income_id])
+  get_income(catalog, income_id)
+  store.delete(catalog, _TABLE, EqualTo("id", income_id))

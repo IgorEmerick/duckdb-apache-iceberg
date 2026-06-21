@@ -7,8 +7,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import duckdb
 from fastapi import FastAPI
+from pyiceberg.catalog import Catalog
 
 from db.migrations import MIGRATIONS_DIR, run_migrations
 from routers import expenses, incomes, reports
@@ -16,25 +16,25 @@ from routers.categories import build_categories_router
 
 
 def create_app(
-  connection: duckdb.DuckDBPyConnection | None = None,
+  catalog: Catalog | None = None,
   migrations_dir: str | Path = MIGRATIONS_DIR,
 ) -> FastAPI:
   """Build and configure the FastAPI application.
 
-  ``connection`` lets callers (e.g. tests) inject a DuckDB connection. When
-  omitted, the real Iceberg-backed connection is built lazily on startup.
-  Pending migrations are applied during the startup lifespan event.
+  ``catalog`` lets callers (e.g. tests) inject a PyIceberg catalog. When
+  omitted, the real REST catalog is built lazily on startup. Pending migrations
+  are applied during the startup lifespan event.
   """
 
   @asynccontextmanager
   async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    conn = connection
-    if conn is None:
-      from db.connection import get_connection
+    active = catalog
+    if active is None:
+      from db.catalog import get_catalog
 
-      conn = get_connection()
-    app.state.connection = conn
-    run_migrations(conn, migrations_dir)
+      active = get_catalog()
+    app.state.catalog = active
+    run_migrations(active, migrations_dir)
     yield
 
   app = FastAPI(title="Financial Management Back-End", lifespan=lifespan)

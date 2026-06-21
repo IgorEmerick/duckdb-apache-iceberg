@@ -1,63 +1,63 @@
-"""Migration discovery and ordering.
+"""Migration discovery and execution (PyIceberg).
 
-Migration files are named ``{timestamp}-{name}`` so a plain lexical sort on the
-filename yields chronological order.
+Migration files are Python modules named ``{timestamp}-{name}.py`` exposing an
+``up(catalog)`` function. A plain lexical sort on the filename yields
+chronological order. Applied migrations are recorded in the ``migrations``
+Iceberg table (created by the first migration).
 """
 
+import importlib.util
 from collections.abc import Iterable
+from datetime import datetime
 from pathlib import Path
 
-import duckdb
+from pyiceberg.catalog import Catalog
 
-MIGRATIONS_TABLE_DDL = (
-  "CREATE TABLE IF NOT EXISTS migrations (name VARCHAR, applied_at TIMESTAMP)"
-)
+from db import store
+from db.catalog import namespace
 
-# Repository-level directory holding the ``{timestamp}-{name}.sql`` files.
+# Repository-level directory holding the ``{timestamp}-{name}.py`` files.
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
 
 def pending_migrations(available: Iterable[str], applied: Iterable[str]) -> list[str]:
-  """Return migration filenames not yet applied, in chronological order.
-
-  ``available`` is the set of migration files found on disk; ``applied`` is the
-  set of migration names already recorded in the migrations table.
-  """
+  """Return migration filenames not yet applied, in chronological order."""
   applied_set = set(applied)
   return sorted(name for name in available if name not in applied_set)
 
 
-def applied_migrations(conn: duckdb.DuckDBPyConnection) -> set[str]:
+def applied_migrations(catalog: Catalog) -> set[str]:
   """Return the set of migration names recorded in the ``migrations`` table.
 
-  Returns an empty set when the table does not exist yet (fresh database),
-  so the very first migration can bootstrap it.
+  Returns an empty set when the table does not exist yet (fresh catalog).
   """
-  try:
-    rows = conn.execute("SELECT name FROM migrations").fetchall()
-  except duckdb.CatalogException:
+  if not store.table_exists(catalog, "migrations"):
     return set()
-  return {row[0] for row in rows}
+  return {row["name"] for row in store.rows(catalog, "migrations")}
 
 
-def run_migrations(
-  conn: duckdb.DuckDBPyConnection, migrations_dir: str | Path
-) -> list[str]:
-  """Apply every pending ``.sql`` migration in chronological order.
+def _load_up(path: Path):
+  spec = importlib.util.spec_from_file_location(f"migration_{path.stem}", path)
+  module = importlib.util.module_from_spec(spec)
+  spec.loader.exec_module(module)
+  return module.up
 
-  Ensures the ``migrations`` bookkeeping table exists, then for each migration
-  not yet recorded (ordered by filename) executes its SQL and records its name.
-  Returns the list of migration names applied during this call.
+
+def run_migrations(catalog: Catalog, migrations_dir: str | Path) -> list[str]:
+  """Apply every pending migration module in chronological order.
+
+  Ensures the namespace exists, then for each migration not yet recorded runs
+  its ``up(catalog)`` and records its name. Returns the names applied this call.
   """
-  conn.execute(MIGRATIONS_TABLE_DDL)
+  catalog.create_namespace_if_not_exists(namespace())
 
   directory = Path(migrations_dir)
-  available = [path.name for path in directory.glob("*.sql")]
-  pending = pending_migrations(available, applied_migrations(conn))
+  available = [p.name for p in directory.glob("*.py") if not p.name.startswith("_")]
+  pending = pending_migrations(available, applied_migrations(catalog))
 
   for name in pending:
-    sql = (directory / name).read_text()
-    conn.execute(sql)
-    conn.execute("INSERT INTO migrations VALUES (?, now())", [name])
+    up = _load_up(directory / name)
+    up(catalog)
+    store.append(catalog, "migrations", {"name": name, "applied_at": datetime.now()})
 
   return pending
