@@ -1,15 +1,15 @@
 """HTTP routes for incomes."""
 
-import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pyiceberg.catalog import Catalog
 
 from models.incomes import IncomeCreate, IncomeOut, IncomeUpdate
 from services import incomes
 from services.errors import IncomeNotFound, UnknownCategory
 
 
-def get_connection(request: Request) -> duckdb.DuckDBPyConnection:
-  return request.app.state.connection
+def get_catalog(request: Request) -> Catalog:
+  return request.app.state.catalog
 
 
 router = APIRouter(prefix="/incomes", tags=["incomes"])
@@ -18,11 +18,11 @@ router = APIRouter(prefix="/incomes", tags=["incomes"])
 @router.post("", response_model=IncomeOut, status_code=status.HTTP_201_CREATED)
 def create_income(
   payload: IncomeCreate,
-  conn: duckdb.DuckDBPyConnection = Depends(get_connection),
+  catalog: Catalog = Depends(get_catalog),
 ):
   try:
     return incomes.create_income(
-      conn,
+      catalog,
       amount_cents=payload.amount_cents,
       month=payload.month,
       description=payload.description,
@@ -37,10 +37,10 @@ def create_income(
 @router.get("/{income_id}", response_model=IncomeOut)
 def get_income(
   income_id: int,
-  conn: duckdb.DuckDBPyConnection = Depends(get_connection),
+  catalog: Catalog = Depends(get_catalog),
 ):
   try:
-    return incomes.get_income(conn, income_id)
+    return incomes.get_income(catalog, income_id)
   except IncomeNotFound as exc:
     raise HTTPException(status.HTTP_404_NOT_FOUND, "income not found") from exc
 
@@ -49,11 +49,11 @@ def get_income(
 def update_income(
   income_id: int,
   payload: IncomeUpdate,
-  conn: duckdb.DuckDBPyConnection = Depends(get_connection),
+  catalog: Catalog = Depends(get_catalog),
 ):
   changes = payload.model_dump(exclude_unset=True, mode="json")
   try:
-    return incomes.update_income(conn, income_id, changes)
+    return incomes.update_income(catalog, income_id, changes)
   except IncomeNotFound as exc:
     raise HTTPException(status.HTTP_404_NOT_FOUND, "income not found") from exc
   except UnknownCategory as exc:
@@ -65,9 +65,9 @@ def update_income(
 @router.delete("/{income_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_income(
   income_id: int,
-  conn: duckdb.DuckDBPyConnection = Depends(get_connection),
+  catalog: Catalog = Depends(get_catalog),
 ):
   try:
-    incomes.delete_income(conn, income_id)
+    incomes.delete_income(catalog, income_id)
   except IncomeNotFound as exc:
     raise HTTPException(status.HTTP_404_NOT_FOUND, "income not found") from exc

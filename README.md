@@ -1,10 +1,16 @@
 # Financial Management Back-End — Technical Design
 
 A single-user personal **financial management** back-end written in **Python**
-with **FastAPI**, using **DuckDB** for reads/aggregation and **Apache Iceberg**
-(written natively by **DuckDB** through an attached **Iceberg REST catalog**) as
-the storage model. The project doubles as a hands-on study of **DuckDB-native
-Iceberg writes** so the pattern can be reused on higher-throughput projects.
+with **FastAPI**. Storage is **Apache Iceberg** via an **Iceberg REST catalog**:
+**PyIceberg** performs all writes (table management + insert/update/delete) and
+**DuckDB** performs the read/aggregation side (the monthly report) over the
+Arrow data scanned from Iceberg.
+
+> **Why the hybrid?** DuckDB-native Iceberg writes were the original intent, but
+> DuckDB's stable `iceberg` extension attaches a REST catalog **read-only**, so
+> writes were moved to **PyIceberg** (which writes against the same catalog and
+> warehouse). DuckDB stays on the read side, where its Iceberg/Arrow support is
+> solid.
 
 ---
 
@@ -17,10 +23,11 @@ Provide an HTTP API to record and manage a single user's **expenses** and
 containing every income and expense for the month, the **total expense per
 category**, and the **final month balance**.
 
-The data layer is intentionally built on **DuckDB + Apache Iceberg** to exercise
-and demonstrate how DuckDB performs **native Iceberg writes** (`INSERT` /
-`UPDATE` / `DELETE`) against an Iceberg table managed by a REST catalog, with a
-warehouse that can live on a **local folder** or in **AWS S3**.
+The data layer is built on **PyIceberg + DuckDB + Apache Iceberg**: PyIceberg
+manages tables and performs writes (`append` / `delete` / transactional
+overwrite) against an Iceberg catalog whose warehouse can live on a **local
+folder** or in **AWS S3 / MinIO**; DuckDB aggregates the Arrow output for the
+monthly report.
 
 ### Scope
 
@@ -30,9 +37,10 @@ warehouse that can live on a **local folder** or in **AWS S3**.
 - CRUD for **incomes** (description, value, month, optional category).
 - CRUD for **expense categories** and **income categories** (with unique names).
 - **Monthly report** (incomes, expenses, total expense per category, balance).
-- A custom, file-based **schema migration system** run automatically on startup.
-- Storage on **DuckDB + Iceberg**, warehouse path provided by an environment
-  variable (local folder **or** S3), via a **local Iceberg REST catalog**.
+- A custom, file-based **schema migration system** (Python migration modules)
+  run automatically on startup.
+- Storage on **Iceberg** via a REST catalog (PyIceberg writes, DuckDB reads);
+  warehouse path provided by an environment variable (local folder **or** S3).
 
 **Excluded (non-goals)**
 
@@ -130,35 +138,42 @@ warehouse that can live on a **local folder** or in **AWS S3**.
 ```mermaid
 flowchart LR
     Client[HTTP Client] -->|REST/JSON| API[FastAPI App]
-    API -->|SQL: INSERT/UPDATE/DELETE/SELECT| DuckDB[(DuckDB engine)]
-    DuckDB -->|ATTACH TYPE iceberg| REST[Iceberg REST Catalog]
+    API -->|writes: append/delete/overwrite| PyIceberg[PyIceberg]
+    API -->|report: scan to Arrow + SQL| DuckDB[(DuckDB engine)]
+    PyIceberg -->|create/commit tables| REST[Iceberg REST Catalog]
+    DuckDB -->|scan tables| REST
     REST -->|table metadata pointers| Warehouse[(Warehouse: local folder or S3)]
-    DuckDB -->|read/write data & metadata files| Warehouse
+    PyIceberg -->|write data & metadata files| Warehouse
     API -->|on startup| Migrator[Migration Runner]
-    Migrator --> DuckDB
+    Migrator --> PyIceberg
 ```
 
 - **FastAPI** exposes the REST routes and orchestrates use cases.
-- **DuckDB** is the single SQL engine for **both** reads and **native Iceberg
-  writes**. It loads the `iceberg` (and `httpfs` for S3) extensions and
-  `ATTACH`es the Iceberg **REST catalog**.
+- **PyIceberg** owns the **write** side: it creates tables (migrations) and
+  performs `append` / `delete` / transactional overwrite against the Iceberg
+  **REST catalog**, writing Parquet data and metadata into the warehouse.
+- **DuckDB** owns the **read** side: the report scans the Iceberg tables to
+  **Arrow** (via PyIceberg) and aggregates them with SQL in-process.
 - The **Iceberg REST catalog** owns table metadata and points at the
-  **warehouse** (the env-var path). DuckDB reads/writes the actual Parquet data
-  files and Iceberg metadata in the warehouse.
+  **warehouse** (the env-var path; local folder or S3/MinIO).
 
 ### Step 1 — Application startup & migration runner
 
 The migration system is file-based:
 
-- Migration files live in a `migrations/` directory, named
-  **`{timestamp}-{migration_name}`** (e.g.
-  `20260101000000-create_migrations_table`). The timestamp prefix guarantees
-  chronological ordering.
-- The **initial migration** creates the `migrations` table **if it does not
-  exist** and registers **its own filename** in it (if not already registered).
-- On every startup, the runner lists all migration files, finds those **not yet
-  registered** in the `migrations` table, and for each (in chronological order)
-  **executes** it and **records** its filename.
+- Migration files are **Python modules** in a `migrations/` directory, named
+  **`{timestamp}-{migration_name}.py`** (e.g.
+  `20260101000000-create_migrations_table.py`), each exposing an `up(catalog)`
+  function. The timestamp prefix guarantees chronological ordering.
+- The **initial migration** creates the `migrations` table (an Iceberg table);
+  the runner then records the migration's filename in it.
+- On every startup, the runner lists all migration modules, finds those **not
+  yet recorded** in the `migrations` table, and for each (in chronological
+  order) calls its `up(catalog)` and **records** its filename.
+
+> The "Step" sequence diagrams below show the storage interaction with **DuckDB**
+> for brevity; in the implemented hybrid, **writes go through PyIceberg** and only
+> the **report read** uses DuckDB (over Arrow scanned from Iceberg).
 
 ```mermaid
 sequenceDiagram
@@ -282,17 +297,20 @@ sequenceDiagram
 |---|---|---|---|---|
 | Iceberg warehouse | Object/file storage | `ICEBERG_WAREHOUSE` env var — local folder path **or** `s3://bucket/prefix` | None (local FS) / **AWS credentials** for S3 | Holds Parquet data + Iceberg metadata. No app-level rate limit; S3 request costs apply. |
 | Iceberg REST catalog | Iceberg REST catalog service | `ICEBERG_REST_URI` (e.g. `http://localhost:8181`) | Catalog-dependent (none for the local fixture; token/OAuth for Lakekeeper/Polaris) | Run locally (e.g. `apache/iceberg-rest-fixture`, Lakekeeper, or Polaris via Docker). Owns table metadata pointers. |
-| DuckDB engine | Embedded SQL engine | In-process (optional local `.duckdb` file for session state) | None | Loads `iceberg` + `httpfs` extensions; performs all reads and native Iceberg writes. |
-| Migration files | Local filesystem | `migrations/` directory | None | Named `{timestamp}-{name}`; executed in chronological order on startup. |
+| PyIceberg | Iceberg client (writes) | In-process | Catalog/S3 credentials | Creates tables and performs `append`/`delete`/overwrite against the catalog. |
+| DuckDB engine | Embedded SQL engine (reads) | In-process | None | Aggregates Arrow scanned from Iceberg for the monthly report. |
+| Migration modules | Local filesystem | `migrations/` directory | None | Python modules `{timestamp}-{name}.py` with `up(catalog)`; run in order on startup. |
 
 ### Relevant environment variables
 
 | Variable | Required | Example | Purpose |
 |---|---|---|---|
 | `ICEBERG_WAREHOUSE` | Yes | `/data/warehouse` or `s3://my-bucket/finance` | Warehouse root for Iceberg data + metadata. |
-| `ICEBERG_REST_URI` | Yes | `http://localhost:8181` | Iceberg REST catalog endpoint DuckDB attaches to. |
-| `ICEBERG_CATALOG_NAME` | No | `finance` | Name used in the DuckDB `ATTACH` and qualified table names. |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | If S3 | — | Credentials for S3-backed warehouses (`httpfs`). |
+| `ICEBERG_REST_URI` | Yes | `http://localhost:8181` | Iceberg REST catalog endpoint. |
+| `ICEBERG_CATALOG_NAME` | No | `finance` | Catalog name passed to PyIceberg. |
+| `ICEBERG_NAMESPACE` | No | `finance` | Namespace the tables live in (default `finance`). |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | If S3 | — | Credentials for S3/MinIO-backed warehouses. |
+| `S3_ENDPOINT` / `S3_URL_STYLE` / `S3_USE_SSL` | If MinIO | `minio:9000` / `path` / `false` | Custom S3 endpoint settings (e.g. MinIO). |
 
 ---
 
@@ -457,11 +475,12 @@ share a name) and each kind has its own `OUTROS` fallback row.
 
 | Service / Component | Purpose | Auth type | Notes |
 |---|---|---|---|
-| **DuckDB** (`duckdb` + `iceberg`, `httpfs` extensions) | SQL engine for reads and **native Iceberg writes** | None | Core of the experiment; performs `ATTACH` to the REST catalog. |
-| **Iceberg REST catalog** (`apache/iceberg-rest-fixture` / Lakekeeper / Polaris) | Manages Iceberg table metadata; required for DuckDB-native writes | None (fixture) / token/OAuth (others) | Run locally via Docker; warehouse points at `ICEBERG_WAREHOUSE`. |
+| **PyIceberg** | Iceberg client for table management + writes (`append`/`delete`/overwrite) | Catalog / S3 credentials | Owns the write side against the REST catalog. |
+| **DuckDB** | In-process SQL engine for the report (aggregates Arrow scanned from Iceberg) | None | Read side only. |
+| **Iceberg REST catalog** (`apache/iceberg-rest-fixture` / Lakekeeper / Polaris) | Manages Iceberg table metadata | None (fixture) / token/OAuth (others) | Run locally via Docker; warehouse points at `ICEBERG_WAREHOUSE`. |
+| **MinIO / AWS S3** | Warehouse storage when `ICEBERG_WAREHOUSE` is `s3://…` | AWS credentials | Shared by PyIceberg (writes) and DuckDB (reads). |
 | **FastAPI** (+ Uvicorn) | HTTP routing, request validation, app lifecycle | None | Runs migrations on startup before serving. |
 | **Pydantic** | Request/response models and validation | — | Enforces enums, required fields, `> 0`, `YYYY-MM`. |
-| **AWS S3** (optional) | Warehouse storage when `ICEBERG_WAREHOUSE` is `s3://…` | AWS credentials | Accessed by DuckDB via `httpfs`; not used for local-folder warehouses. |
 
 ---
 
@@ -506,13 +525,13 @@ The app reads `ICEBERG_REST_URI`, `ICEBERG_WAREHOUSE`, `ICEBERG_CATALOG_NAME`,
 and S3 settings (`AWS_*`, `S3_ENDPOINT`, `S3_URL_STYLE`, `S3_USE_SSL`) from the
 environment (see the compose file).
 
-> **Write path:** DuckDB's stable `iceberg` extension attaches the REST catalog
-> **read-only**, so the native write path does not work end-to-end. Writes are
-> being migrated to **PyIceberg** (DuckDB stays on the read/report side); reads
-> against the catalog work today.
+> **Write path:** writes go through **PyIceberg** (DuckDB's stable `iceberg`
+> extension attaches a REST catalog read-only); DuckDB is used only for the
+> report aggregation. The full stack works end-to-end via `docker compose`.
 
 ## Versioning
 
 | Version | Date | Changes | Authors |
 |---|---|---|---|
 | v1.0.0 | 2026-06-21 | Initial technical design: overview/scope, functional & non-functional requirements, data flow (startup migrations, expense write, category cascade, monthly report), data sources, data contracts (schemas, endpoints, examples), external dependencies. DuckDB-native Iceberg writes via a local Iceberg REST catalog; warehouse on local folder or S3. | Igor Emerick |
+| v1.1.0 | 2026-06-21 | Switched the write path to **PyIceberg** (DuckDB's stable extension attaches the REST catalog read-only); DuckDB now serves the report read over Arrow. Python migration modules. Added Dockerfile + docker-compose stack (MinIO + REST catalog + app), validated end-to-end. | Igor Emerick |

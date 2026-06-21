@@ -1,53 +1,38 @@
-"""Expense service: create, read, update (partial), and delete expenses.
+"""Expense service: create, read, update (partial), and delete (PyIceberg)."""
 
-Operates over a DuckDB connection whose default database is the Iceberg catalog
-(a plain in-memory database in tests), so all SQL uses unqualified table names.
-"""
+from pyiceberg.catalog import Catalog
+from pyiceberg.expressions import EqualTo
 
-import duckdb
-
+from db import store
 from services import _clock
 from services._repository import insert_with_generated_id
 from services.errors import ExpenseNotFound, UnknownCategory
 
 _TABLE = "expenses"
 _CATEGORY_TABLE = "expense_categories"
-_COLUMNS = (
-  "id",
+_FIELDS = (
   "category_id",
   "description",
   "payment_method",
   "amount_cents",
   "month",
-  "created_at",
-  "updated_at",
 )
 
 
-def _row_to_dict(row: tuple) -> dict:
-  return dict(zip(_COLUMNS, row, strict=True))
+def _category_exists(catalog: Catalog, category_id: int) -> bool:
+  return bool(store.rows(catalog, _CATEGORY_TABLE, EqualTo("id", category_id)))
 
 
-def _category_exists(conn: duckdb.DuckDBPyConnection, category_id: int) -> bool:
-  rows = conn.execute(
-    f"SELECT 1 FROM {_CATEGORY_TABLE} WHERE id = ?", [category_id]
-  ).fetchall()
-  return len(rows) > 0
-
-
-def get_expense(conn: duckdb.DuckDBPyConnection, expense_id: int) -> dict:
+def get_expense(catalog: Catalog, expense_id: int) -> dict:
   """Return the expense, or raise ``ExpenseNotFound``."""
-  columns = ", ".join(_COLUMNS)
-  row = conn.execute(
-    f"SELECT {columns} FROM {_TABLE} WHERE id = ?", [expense_id]
-  ).fetchone()
-  if row is None:
+  rows = store.rows(catalog, _TABLE, EqualTo("id", expense_id))
+  if not rows:
     raise ExpenseNotFound(expense_id)
-  return _row_to_dict(row)
+  return rows[0]
 
 
 def create_expense(
-  conn: duckdb.DuckDBPyConnection,
+  catalog: Catalog,
   *,
   category_id: int,
   description: str,
@@ -59,12 +44,12 @@ def create_expense(
 
   Raises ``UnknownCategory`` if ``category_id`` does not exist.
   """
-  if not _category_exists(conn, category_id):
+  if not _category_exists(catalog, category_id):
     raise UnknownCategory(category_id)
 
   timestamp = _clock.now()
   new_id = insert_with_generated_id(
-    conn,
+    catalog,
     _TABLE,
     {
       "category_id": category_id,
@@ -76,37 +61,27 @@ def create_expense(
       "updated_at": timestamp,
     },
   )
-  return get_expense(conn, new_id)
+  return get_expense(catalog, new_id)
 
 
-def update_expense(
-  conn: duckdb.DuckDBPyConnection, expense_id: int, changes: dict
-) -> dict:
+def update_expense(catalog: Catalog, expense_id: int, changes: dict) -> dict:
   """Apply a partial update to an expense (only the provided fields).
 
-  Raises ``ExpenseNotFound`` if it does not exist and ``UnknownCategory`` if a
-  provided ``category_id`` does not exist.
+  Raises ``ExpenseNotFound`` if missing and ``UnknownCategory`` if a provided
+  ``category_id`` does not exist.
   """
-  get_expense(conn, expense_id)  # raises ExpenseNotFound
+  current = get_expense(catalog, expense_id)
 
-  if "category_id" in changes and not _category_exists(conn, changes["category_id"]):
+  if "category_id" in changes and not _category_exists(catalog, changes["category_id"]):
     raise UnknownCategory(changes["category_id"])
 
-  updates = {
-    column: value
-    for column, value in changes.items()
-    if column in _COLUMNS and column != "id"
-  }
-  updates["updated_at"] = _clock.now()
-  set_sql = ", ".join(f"{column} = ?" for column in updates)
-  conn.execute(
-    f"UPDATE {_TABLE} SET {set_sql} WHERE id = ?",
-    [*updates.values(), expense_id],
-  )
-  return get_expense(conn, expense_id)
+  applied = {field: changes[field] for field in _FIELDS if field in changes}
+  updated = {**current, **applied, "updated_at": _clock.now()}
+  store.replace(catalog, _TABLE, EqualTo("id", expense_id), [updated])
+  return updated
 
 
-def delete_expense(conn: duckdb.DuckDBPyConnection, expense_id: int) -> None:
+def delete_expense(catalog: Catalog, expense_id: int) -> None:
   """Delete an expense, or raise ``ExpenseNotFound``."""
-  get_expense(conn, expense_id)  # raises ExpenseNotFound
-  conn.execute(f"DELETE FROM {_TABLE} WHERE id = ?", [expense_id])
+  get_expense(catalog, expense_id)
+  store.delete(catalog, _TABLE, EqualTo("id", expense_id))

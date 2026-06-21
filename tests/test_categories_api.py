@@ -1,4 +1,3 @@
-import duckdb
 import pytest
 from fastapi.testclient import TestClient
 
@@ -6,9 +5,8 @@ from main import create_app
 
 
 @pytest.fixture
-def client():
-  conn = duckdb.connect(":memory:")
-  app = create_app(connection=conn)
+def client(fresh_catalog):
+  app = create_app(catalog=fresh_catalog)
   with TestClient(app) as test_client:  # lifespan runs the migrations
     yield test_client
 
